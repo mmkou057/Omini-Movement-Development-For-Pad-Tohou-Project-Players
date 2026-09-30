@@ -1,0 +1,28 @@
+# ---- build artifacts ----
+*.o
+*.obj
+*.exp
+*.lib
+*.a
+*.exe
+*.dll
+
+# keep the tested prebuilt deliverables
+!release/
+!release/*.exe
+!release/*.dll
+
+# ---- runtime / deployment files ----
+# written by PadSwitch.exe next to the game, or created manually
+padhook.ini
+*.log
+
+# ---- editor / OS noise ----
+*.user
+*.suo
+.vs/
+Thumbs.db
+desktop.ini
+
+# ---- local clone leftover (a nested clone of this same repo) ----
+/为东方Project手柄玩家设计的全向移动插件/
