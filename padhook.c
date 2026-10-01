@@ -1,4 +1,11 @@
-/* padhook.c - dinput8.dll 代理 (DLL proxy)
+/* padhook.c - dinput8.dll 代理 (DLL proxy)  【帧率自适应版 / highrefreshrate】
+ *
+ * 本版与 th15_injector\padhook.c 的区别（仅输入节奏层，语义不变）:
+ *   - PWM 占空比按"游戏实际消费输入的代次"步进（每 g_joy_seq +1 走一步），
+ *     消费率 60Hz/120Hz/400Hz 皆自动跟随，占空比数学与消费率无关；
+ *   - 用 QPC 实测消费节奏：停顿(暂停/掉帧)超过 4 倍常规间隔时重置 PWM 相位，
+ *     避免恢复时打出一段陈旧占空；并把实测输入率写日志（诊断高刷链路）；
+ *   - 方向扇区切换清零相位（沿用原版）+ 停顿清零（新增），无任何 60Hz 写死假设。
  *
  * 部署: 编译出的 dinput8.dll 放到 th15 游戏目录. Windows 优先加载本代理,
  * 游戏调用 DirectInput8Create 即进入我们的 hook.
@@ -496,13 +503,41 @@ static void kb_process(DWORD cb, LPVOID data) {
         && (g_pad_x*g_pad_x + g_pad_y*g_pad_y) > 0.24*0.24;
     int pov_active = g_pad_alive && (g_pad_pov != 0xFFFFFFFF);
 
-    /* 帧对齐: 手柄数据每真实帧 +1 代次; 仅新代次推进一步 PWM.
-       同帧内多余键盘轮询只重复当前方向, 占空比不被轮询节奏扭曲 */
+    /* 帧对齐（自适应版）: 手柄数据每被游戏消费一次 +1 代次; 仅新代次推进一步 PWM.
+       消费率本身是任意的（60Hz 原版 / 高刷子步进下未来的 120/400Hz），
+       Bresenham 按代次推进 => 占空比与消费率无关，自动跟随。
+       同代次内多余键盘轮询只重复当前方向, 占空比不被轮询节奏扭曲。
+       新增 QPC 节奏测量：相邻代次间隔 > 4 倍 EMA 视为停顿（暂停/掉帧），
+       清零 PWM 相位防止恢复时打出陈旧占空；每 ~5 秒记录一次实测消费率。 */
     static int last_seq = -1;
     static int cur_dir = 0;
     static pwm_acc_t acc = {0.0};
     static int s_la = 0, s_lb = 0;
+    static LARGE_INTEGER s_qpf, s_prev_tick, s_rate_win;
+    static unsigned s_seq_in_win = 0;
+    static double s_ema_ms = 0.0;
+    if (!s_qpf.QuadPart) QueryPerformanceFrequency(&s_qpf);
     if ((int)g_joy_seq != last_seq) {
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        if (last_seq >= 0 && s_prev_tick.QuadPart) {
+            double ms = (double)(now.QuadPart - s_prev_tick.QuadPart) * 1000.0
+                      / (double)s_qpf.QuadPart;
+            if (s_ema_ms <= 0.0) s_ema_ms = ms;
+            else if (ms < s_ema_ms * 4.0) s_ema_ms += (ms - s_ema_ms) * 0.05;
+            if (ms > s_ema_ms * 4.0) {          /* 停顿：重置相位与方向缓存 */
+                acc.acc = 0.0; s_la = s_lb = 0;
+                if (cur_dir) pad_log("input stall %.0fms (ema %.1fms): pwm phase reset", ms, s_ema_ms);
+            }
+            s_seq_in_win++;
+            if (s_rate_win.QuadPart
+                && (now.QuadPart - s_rate_win.QuadPart) >= s_qpf.QuadPart * 5) {
+                double sec = (double)(now.QuadPart - s_rate_win.QuadPart) / (double)s_qpf.QuadPart;
+                pad_log("input consume rate: %.1f/s (ema interval %.2fms)",
+                        s_seq_in_win / sec, s_ema_ms);
+                s_rate_win = now; s_seq_in_win = 0;
+            } else if (!s_rate_win.QuadPart) { s_rate_win = now; s_seq_in_win = 0; }
+        }
+        s_prev_tick = now;
         last_seq = (int)g_joy_seq;
         if (stick_active) {
             pwm_dir_t pd;
@@ -685,7 +720,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID _) {
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX
                    | SEM_NOOPENFILEERRORBOX);
         g_tls_idx = TlsAlloc();
-        pad_log("DLL_PROCESS_ATTACH (proxy dinput8.dll loaded)");
+        pad_log("DLL_PROCESS_ATTACH (adaptive padhook, highrefreshrate build)");
         load_real_dinput8();
         load_config();
         g_host = GetModuleHandleA(NULL);
