@@ -1,3 +1,7 @@
 LIBRARY dinput8
 EXPORTS
   DirectInput8Create = MyDirectInput8Create
+  vm_get_player_pos
+  vm_get_game_kind
+  vm_get_device_rva
+  vm_get_stick

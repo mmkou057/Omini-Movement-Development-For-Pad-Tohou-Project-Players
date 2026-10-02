@@ -8,7 +8,9 @@
 - 兼容编号非标准的第三方手柄
 - 已在 **TH15 东方绀珠传** 实测可走出 30° 、15°等任意方向
 
-> **最新更新（帧率自适应版）**：PWM 占空比改为按"游戏实际消费输入的代次"步进，60Hz 原版与高刷插件下的 120/400Hz 消费率自动跟随，占空比数学与帧率完全无关；新增 QPC 停顿检测（暂停/掉帧超过常规间隔 4 倍即重置 PWM 相位，恢复时不会打出一段陈旧方向），并在 `padhook.log` 中每约 5 秒记录一次实测输入消费率，方便诊断高刷链路。
+> **最新更新（极坐标矢量直映版）**：新增 `mode=4`——关卡内不再用键盘 PWM 注入，而是 inline hook 游戏运动层，把玩家位移矢量直接旋转到摇杆极角（极坐标矢量直映），任意方向严格匀速，手感与原生一致；菜单/暂停仍走 mode=3 的 8 向凸包 PWM。同时输入读取覆盖两个游戏世代：TH15 及更早走 DInput 键盘/手柄设备；TH17 世代起键盘改走 `GetKeyboardState`，手柄按 XInput → DInput → winmm 顺序仲裁，并封死 winmm 回退。
+>
+> **上一版（帧率自适应版）**：PWM 占空比改为按"游戏实际消费输入的代次"步进，60Hz 原版与高刷插件下的 120/400Hz 消费率自动跟随；QPC 停顿检测在暂停/掉帧后重置 PWM 相位。
 
 ## 工作原理
 
@@ -18,13 +20,16 @@
    - 手柄的真实读取结果被复制为内部唯一数据源，交还给游戏的缓冲被中和为静止态，游戏自身的 4/8 向手柄路径永远看到静止，不会与注入冲突；
    - 键盘读取时，按手柄方向把 8 向键注入键盘缓冲。
 4. **PWM 凸包分解**（见 [pwm.c](./pwm.c)）：4 个主向 + 4 个对角向量构成正八边形，任意摇杆向量可写成相邻两个顶点向量的凸组合 `v = (1-a)·vA + a·vB`。每帧只按 Bresenham 占空比输出 A 或 B，帧均速度收敛到 `v`。另外，东方至今的所有作品均为匀速移动，故摇杆幅值不参与调制（超过死区即满速）。
+5. **极坐标矢量直映**（mode=4，见 [vector.c](./vector.c)）：关卡玩法中对游戏运动层做 inline hook，在游戏算出本帧位移 (dx, dy) 后把它旋转到摇杆极角（模长不变），再交还游戏——方向连续、严格匀速，不再经过 8 向离散化。运动层签名按游戏匹配（TH15/TH17 已内置），匹配不到就自动回退 mode=3 的 PWM 注入，菜单/暂停始终走 PWM。
 
 ## 目录结构
 
 | 路径 | 说明 |
 |---|---|
-| [padhook.c](./padhook.c) | DLL 代理主体：DirectInput hook、设备分流、轴归中、按钮映射 |
+| [padhook.c](./padhook.c) | DLL 代理主体：DirectInput/XInput/winmm 输入仲裁、设备分流、轴归中、按钮映射、运动层 inline hook |
 | [pwm.c](./pwm.c) / [pwm.h](./pwm.h) | 八向凸包分解 + Bresenham 占空比 |
+| [vector.c](./vector.c) / [vector.h](./vector.h) | 极坐标矢量直映运动层（mode=4）：TH15/TH17 运动签名、位移矢量旋转 |
+| [test_vector.c](./test_vector.c) | 矢量层数学自测（TH15 直映 + TH17 被动链路） |
 | [padhook.def](./padhook.def) | 导出 `DirectInput8Create` |
 | [PadSwitch.cs](./PadSwitch.cs) | 部署开关 GUI（扫描游戏 / 启用 / 取消 / 启动） |
 | [test_sim.c](./test_sim.c) | 全链路控制台模拟测试（0°/30°/45°/90°、死区、POV、按钮） |
@@ -69,7 +74,7 @@ btn_pause=7
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
-| `mode` | `0` | `0` 完全透明（等同未安装）；`1` 仅压制手柄（诊断）；`2` 仅 hook 键盘并原样透传（诊断）；`3` 完整全向移动 |
+| `mode` | `0` | `0` 完全透明（等同未安装）；`1` 仅压制手柄（诊断）；`2` 仅 hook 键盘并原样透传（诊断）；`3` 完整全向移动（PWM 注入）；`4` 极坐标矢量直映（关卡内矢量直映 + 菜单 PWM，TH15/TH17 运动层签名匹配才启用） |
 | `btn_shoot` | `0` | 射击按钮编号（0 基） |
 | `btn_bomb` | `1` | 弹幕 / BOMB 按钮编号 |
 | `btn_slow` | `4` | 低速移动按钮编号 |
@@ -105,7 +110,7 @@ build_switch.bat
 - `test_sim.c` 直接 `#include "padhook.c"` 编成控制台程序，每帧从模板重建手柄缓冲，验证 0°/45°/90°/30°、死区、POV、按钮映射的整条 PWM 链路：
 
 ```bat
-..\mingw32\bin\gcc.exe -m32 -o test_sim.exe test_sim.c pwm.c -lm -lkernel32 -luser32 -lgdi32 -lwinmm
+..\mingw32\bin\gcc.exe -m32 -o test_sim.exe test_sim.c pwm.c vector.c -lm -lkernel32 -luser32 -lgdi32 -lwinmm
 .\test_sim.exe
 ```
 
@@ -118,20 +123,24 @@ build_switch.bat
 
 ## 兼容性
 
-- 目标：使用 **DirectInput8 读键盘 + winmm 读手柄** 的东方正作。
-- TH15 东方绀珠传和TH08 东方永夜抄已实测；其余正作理论上同一 DLL 通用，按钮编号按 ini 校准即可。
-- 第三方非标准手柄若 XInput 读取全零也不受影响——本方案直接复用游戏自己的 DirectInput 设备数据。
+- 目标：东方正作两种输入世代——**TH15 及更早**（DInput 键盘 + 游戏自建 DInput 手柄设备）与 **TH17 世代起**（`GetKeyboardState` 键盘 + XInput/DInput/winmm 手柄）。
+- TH15 东方绀珠传与 TH17 东方鬼形兽已实测；TH08 东方永夜抄等旧作键盘 PWM 注入通用，按钮编号按 ini 校准即可。
 
 ## 故障排查
 
 - **菜单自动滚动 / 摇杆异常**：轴未正确回中。删掉 `padhook.ini` 中手写的 `axis_min/axis_max`，让 EMA 自然归中重新学习。
-- **启用后键盘失灵或游戏崩溃**：确认使用的是本仓库 [release/](./release) 的成品（59940 字节，帧率自适应版）；早期版本 hook 了 `SetProperty`（vtable[6]）会导致 0xc00000005，当前版本只 hook `GetDeviceState`。
+- **启用后键盘失灵或游戏崩溃**：确认使用的是本仓库 [release/](./release) 的成品（73179 字节，极坐标矢量直映版）；早期版本 hook 了 `SetProperty`（vtable[6]）会导致 0xc00000005，当前版本只 hook `GetDeviceState`。
 - **游戏静默退出**：自行用其他工具链编译时注意，32 位 MinGW 的 `__thread` 会引入对 `libgcc_s_dw2-1.dll` 的动态依赖；本项目已改用 kernel32 `TlsAlloc` 规避。
 - **DLL 不生效**：检查是否放在游戏主程序**同目录**、游戏是否为 32 位（本 DLL 为 32 位）、替换前游戏进程是否已退出。
 
 ## 更新记录
 
-- **帧率自适应版（当前 release）**
+- **极坐标矢量直映版（当前 release）**
+  - 新增 `mode=4`：关卡内 inline hook 游戏运动层，位移矢量直接旋转到摇杆极角，任意方向严格匀速；菜单/暂停仍走 PWM；签名匹配失败自动回退 mode=3；
+  - 输入读取覆盖两个世代：TH15 及更早（DInput 键盘/手柄 GDS）与 TH17+（`GetKeyboardState` 键盘 + XInput/DInput/winmm 三路手柄仲裁，winmm 回退被封死）；
+  - 统一 32 字节逻辑按钮位表：DInput 物理编号与 XInput 位号按当前活动源校准，扳机映射到逻辑号 16/17；
+  - TH15 全向实测（30° 等任意角度），TH17 关卡内矢量直映实测（1024 运动 tick 60fps 稳定）。
+- **帧率自适应版**
   - PWM 占空比由"每真实帧推进一步"改为"每被游戏消费一次（`g_joy_seq` +1）推进一步"，消费率 60/120/400Hz 皆自动跟随，占空比数学与消费率解耦；
   - QPC 实测消费节奏：相邻代次间隔超过 EMA 的 4 倍判定为停顿（暂停/掉帧），自动清零 PWM 相位与方向缓存，恢复后不再输出陈旧占空；
   - 每约 5 秒向 `padhook.log` 写入实测输入消费率与平均间隔，用于诊断高刷链路；

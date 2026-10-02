@@ -14,10 +14,10 @@ if not exist "%GCC%" set "GCC=gcc"
 
 cd /d "%SRC%"
 
-echo ==^> Building dinput8.dll (32-bit, padhook.c + pwm.c)
+echo ==^> Building dinput8.dll (32-bit, padhook.c + pwm.c + vector.c)
 "%GCC%" -m32 -shared -O2 -Wall ^
     -o dinput8.dll ^
-    padhook.c pwm.c ^
+    padhook.c pwm.c vector.c ^
     padhook.def ^
     -Wl,--enable-stdcall-fixup ^
     -Wl,--kill-at ^

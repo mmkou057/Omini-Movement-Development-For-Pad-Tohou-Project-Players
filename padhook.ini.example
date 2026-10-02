@@ -3,7 +3,9 @@
 ; 1 = suppress winmm joystick only (diagnostic)
 ; 2 = hook keyboard GetDeviceState pass-through only (diagnostic)
 ; 3 = full omnidirectional movement (joystick -> PWM -> keyboard inject)
-mode=3
+; 4 = polar vector direct mapping (in-stage dx/dy rotation + menu PWM;
+;     falls back to mode 3 PWM when the stage motion signature mismatches)
+mode=4
 
 ; Gamepad button indices (DirectInput rgbButtons offset, 0-based).
 ; Non-standard pads differ - read the 32-byte BTN hex dump in padhook.log
